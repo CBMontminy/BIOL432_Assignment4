@@ -15,15 +15,162 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 library(ggplot2)
 library(dplyr)
-library(readr)
-library(gridExtra)
+library(randomForest)
+library(tree)
+library(rpart)
 source("http://bit.ly/theme_pub")
-theme_set(theme_pub())
+
 ```
 
 # Loading Data
 ```{r}
-Data=read.csv("Cohen.csv")
-head(Data)
+Data=read.csv("Cohen.csv", header=T)
+str(Data)
 ```
 
+## Checking for NA's
+```{r}
+sum(is.na(Data))
+```
+We know that there are 7 NA's in our data set, but we don't know where.  To make sure we can replace them, we need to make sure they aren't in our categorical columns so we can make a for loop to run a replace command through the columns.  
+```{r}
+sum(is.na(Data[1:3]))
+```
+Now that we know the NA's don't fall within the categorical columns, we can exclude those from our for loop to prevent non-numeric errors.
+```{r}
+for(i in 4:ncol(Data)){
+  Data[is.na(Data[,i]), i]=mean(Data[,i], na.rm=T)
+}
+```
+We can check if this worked by running the original NA check again.
+```{r}
+sum(is.na(Data))
+```
+Great Success!  However, we are going to remove the first 2 columns (patient ID and sample ID)
+```{r}
+Data=Data %>% select(!c("Patient_ID", "Sample_ID"))
+```
+
+
+It is not necessary to normalize the data for a random forests because they are tree-based models that do not require scaling.  The algorithm is not comparing feature values and is instead partitioning the data to make predictions.  Normalizing/scaling the data has no effect on the algorithm's ability to do this. 
+
+## Checking the dimensions of the data frame
+```{r}
+dim(Data)
+```
+Our data fame is 1804 x 40.  This means that there are 1804 observations with 40 columns (39 Proteins)
+```{r}
+table(Data$Tumor_type)
+```
+Of the 1804 observations, 208 were patients with breast cancer, 388 were patients with colorectal cancer, 45 were patients with esophageal cancer, 44 were patients with liver cancer, 104 with lung cancer, 54 with ovarian cancer, 93 with pancreatic cancer, 68 with stomach cancer, and 800 with no observable cancer.  Therefore, 800 normal samples, and 1004 tumor samples.  
+
+# Splitting data
+We will split the dataset into a training and a test dataset.  The training set will be made up of the odd numbered rows, and the test set will be made up of the even numbered rows. 
+```{r}
+Odd=seq_len(nrow(Data)) %% 2
+Train=Data[Odd==1,]
+Test=Data[Odd==0,]
+```
+# Decision Tree
+First changing tumor type to a factor
+```{r}
+Train$Tumor_type=as.factor(Train$Tumor_type)
+Test$Tumor_type=as.factor(Test$Tumor_type)
+```
+
+
+## Creating the decision tree
+```{r}
+Tree=tree(Tumor_type ~., data=Train)
+```
+
+## Plotting the decision tree
+```{r fig.cap= "This figure is a decision tree showing the most influential protein features for predicting tumor type"}
+plot(Tree)
+text(Tree, cex=0.5, adj=1)
+```
+As we can see from the tree diagram, The most influential protein feature was IL 8 (Interleukin 8)
+
+
+## Confusion Matrix
+```{r}
+CM=data.frame(Obs=Test$Tumor_type, Pred=predict(Tree, type="class"))
+table(CM)
+```
+## (Mis)Classification Rate
+
+Classification rate from dividing the diagonal elements by the total count
+```{r}
+Correct=CM %>%
+  filter(Obs==Pred)
+nrow(Correct)/nrow(CM)
+```
+The misclassification rate is 61.4%, which is not very good. As we can see from the table, our model did not predict any esophageal or liver cancer, which is obviously  It did do reasonably well with predicting colorectal and normal samples, which makes sense because these were the two largest groups, so there is more data to predict from.  
+
+
+
+```{r}
+rF=randomForest(Tumor_type~., data=,Train,
+                    ntree=100, mtry=3, nodesize=5, importance=T)
+rF$importance
+```
+
+## Generating confusion matrix and misclassification rate
+```{r}
+CatDat=data.frame(Obs=Test$Tumor_type, Pred=predict(rF, Train, type="class"))
+table(CatDat)
+MisClass=CatDat %>%
+  filter(Obs!=Pred)
+nrow(MisClass)/nrow(CatDat)
+```
+
+```{r fig.cap="This figure is a decision tree based on our binary data tha shows the mean decrease in accuracy and the mean statistical dispersion.  IL 8 shows the best dispersion, indicating it is the most influencial protein in indicating cancer. "}
+varImpPlot(rF, cex=0.5)
+```
+# Binary Data
+## Creating Binary Data
+
+```{r}
+Binary=Data %>% mutate(Binary= Tumor_type) %>%
+  mutate(Binary=replace(Binary, Binary !="Normal", "Cancer")) %>%
+  select(!"Tumor_type")
+```
+
+## Splitting Binary Data into Train and Test 
+
+```{r}
+BinOdd=seq_len(nrow(Binary)) %% 2
+BinTrain=Binary[BinOdd==1,]
+BinTest=Binary[BinOdd==0,]
+```
+
+## Ensuring Binary is a factor
+```{r}
+BinTrain$Binary=as.factor(BinTrain$Binary)
+BinTest$Binary=as.factor(BinTest$Binary)
+```
+
+
+## Creating new random forest
+```{r}
+BinrF=randomForest(Binary~., data=BinTrain,
+                    ntree=100, mtry=3, nodesize=5, importance=T)
+BinrF$importance
+```
+
+## Generating confusion matrix and misclassification rate
+```{r}
+CatDat2=data.frame(Obs=BinTest$Binary, Pred=predict(BinrF, BinTrain, type="class"))
+table(CatDat2)
+MisClass=CatDat2 %>%
+  filter(Obs!=Pred)
+nrow(MisClass)/nrow(CatDat2)
+```
+```{r fig.cap="This fogure shows the mean decrease in accuracy and the mean statistical dispersion.  IL 8 shows the best dispersion, indicating it is the most influencial protein. "}
+varImpPlot(BinrF, cex=0.5)
+```
+IL 8 and IL 6 were the most influential for differentiating between samples with and without cancer. 
+Interleukin 8 is responsible for inducing chemotaxis and promoting angiogenisis. Chemotaxis is the migration of cells either towards or away from chemicals.  Angiogenesis is the formation of new blood vessels.  In a cancer patient, chemotaxis has been shown to be an important role in cancer.  Additionally, angiogenesis is increased as the tumor stimulates blood vessels to grow, allowing it to grow even faster.
+Interleukin 6 plays a role in hose defense, so it makes sense that this would be altered in cancer patients. 
+
+Overall, I think this last model would be useful for detecting caner in blood samples from this panel of proteins.  I do think, however, that finding more cancer-linked proteins would only increase the resolution and decrease the error rate even further.  Additionally, I think it would be beneficial to alter the cost of false positives, as it is much better to have slightly more false negatives in order to decrease false negatives. Where it stands, this model would be extremely beneficial to use when cancer is in question.
